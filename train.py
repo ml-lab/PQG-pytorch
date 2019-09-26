@@ -11,15 +11,15 @@ from pycocoevalcap.eval import COCOEvalCap
 from tensorboardX import SummaryWriter
 import subprocess
 import torch.utils.data as Data
+from misc.dataloader import Dataloader
+import time
+import os
 
 # get command line arguments into args
 parser = utils.make_parser()
 args = parser.parse_args()
 
 torch.manual_seed(args.seed)
-
-import time
-import os
 
 log_folder = 'logs'
 save_folder = 'save'
@@ -28,9 +28,8 @@ folder = time.strftime("%d-%m-%Y_%H:%M:%S")
 if args.start_from != 'None':
     folder = args.start_from.split('/')[-2]
 
-writer_train = SummaryWriter(os.path.join(log_folder, 'train'))
-writer_val = SummaryWriter(os.path.join(log_folder, 'val'))
-writer_score = SummaryWriter(os.path.join(log_folder, 'score'))
+writer_train = SummaryWriter(os.path.join(log_folder, folder + 'train'))
+writer_val = SummaryWriter(os.path.join(log_folder, folder + 'val'))
 
 subprocess.run(['mkdir', os.path.join(save_folder, folder)])
 subprocess.run(['mkdir', os.path.join('samples', folder)])
@@ -40,8 +39,6 @@ subprocess.run(['mkdir', os.path.join('samples', folder)])
 file_sample = os.path.join('samples', folder, 'samples')
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-from misc.dataloader import Dataloader
 
 # get dataloader
 data = Dataloader(args.input_json, args.input_ques_h5)
@@ -77,21 +74,23 @@ def eval_batch(model, device, epoch, it):
 
         probs, encoded_input = model(input_sentence, lengths)
         
-        seq = model.decoder.sample(encoded_input)
+        seq, seq_probs = model.sample(encoded_input)
         
         
         # local loss criterion
         loss = nn.CrossEntropyLoss(ignore_index=data.PAD_token)
 
         # compute local loss
-        local_loss = loss(probs.permute(0, 2, 1), input_sentence)
+        local_loss = loss(seq_probs.permute(0, 2, 1), input_sentence)
             
-        # get encoding from 
-        encoded_output = model.encoder(probs)
+        binary_loss = nn.BCELoss()
 
-        # compute global loss
-        global_loss = model.JointEmbeddingLoss(encoded_output, encoded_input)
-        global_loss *= 5
+        pred_real = model.discriminator(seq, None)
+
+        pred_real_real = model.discriminator(input_sentence, None)
+        
+        g_loss = binary_loss(pred_real, torch.ones(*pred_real.size(), device=pred_real.device))
+        d_loss = binary_loss(pred_real_real, torch.ones(*(pred_real_real.size()), device=pred_real_real.device)) + binary_loss(pred_real, torch.zeros(*(pred_real.size()), device=pred_real.device))
         
         seq = seq.long()
         sents = net_utils.decode_sequence(data.ix_to_word, seq)
@@ -104,11 +103,11 @@ def eval_batch(model, device, epoch, it):
         evalObj.evaluate()
 
         for key in evalObj.eval:
-            writer_score.add_scalar(key, evalObj.eval[key], epoch * iter_per_epoch + it)
+            writer_val.add_scalar(key, evalObj.eval[key], epoch * iter_per_epoch + it)
 
         writer_val.add_scalar('local_loss', local_loss.item(), epoch * iter_per_epoch + it)
-        writer_val.add_scalar('global_loss', global_loss.item(), epoch * iter_per_epoch + it)
-        writer_val.add_scalar('total_loss', local_loss.item() + global_loss.item(), epoch * iter_per_epoch + it)
+        writer_val.add_scalar('gan_loss', g_loss.item() + d_loss.item(), epoch * iter_per_epoch + it)
+        writer_val.add_scalar('total_loss', local_loss.item() + g_loss.item() + d_loss.item(), epoch * iter_per_epoch + it)
 
         f_sample = open(file_sample + str(epoch) + '_' + str(it) + '.txt', 'w')
         
@@ -142,7 +141,7 @@ def train_epoch(model, model_optim, device, epoch, log_per_iter=args.log_every, 
     n_batch = (len(data) - 30000) // args.batch_size
 
     epoch_local_loss = 0
-    epoch_global_loss = 0
+    epoch_gan_loss = 0
     den = 0
     idx = 0
     for batch in train_loader:
@@ -177,43 +176,52 @@ def train_epoch(model, model_optim, device, epoch, log_per_iter=args.log_every, 
         '''loss : ([N, C, d1], [N, d1])'''
         local_loss = loss(probs.permute(0, 2, 1), input_sentence)
         
-        # get encoding from
-        '''([N, d1, C])''' 
-        encoded_output = model.encoder(probs)
-        
-        # compute global loss
-        global_loss = model.JointEmbeddingLoss(encoded_output, encoded_input)
-        
-        global_loss *= 5
-        # take losses togather
-        total_loss = local_loss + global_loss
+        local_loss.backward()
 
-        # backward propagation
-        total_loss.backward()
+        # training generator
 
-        # update the parameters
+        seq, _ = model.sample(encoded_input)
+
+        pred_real = model.discriminator(seq, None)
+
+        binary_loss = nn.BCELoss()
+
+        g_loss = binary_loss(pred_real, torch.ones(*(pred_real.size()), device=pred_real.device))
+
+        g_loss.backward()
+
+        #training discriminator
+
+        pred_real_real = model.discriminator(input_sentence, None)
+        pred_real_fake = model.discriminator(seq, None)
+
+        d_loss = binary_loss(pred_real_real, torch.ones(*(pred_real_real.size()), device=pred_real_real.device)) + binary_loss(pred_real_fake, torch.zeros(*(pred_real_fake.size()), device=pred_real_fake.device))
+        
+        d_loss.backward()
+
+        #updating parameters
+
         model_optim.step()
-
-        
         # calculating losses
         epoch_local_loss += local_loss.item()
-        epoch_global_loss += global_loss.item()
+        epoch_gan_loss += g_loss.item() + d_loss.item()
         den += encoded_input.size()[0]
         print(idx, end='|')
         if (idx + 1) % log_per_iter == 0:
             writer_train.add_scalar('local_loss', local_loss.item(), epoch * iter_per_epoch + idx)
-            writer_train.add_scalar('global_loss', global_loss.item(), epoch * iter_per_epoch + idx)
-            writer_train.add_scalar('total_loss', local_loss.item() + global_loss.item(), epoch * iter_per_epoch + idx)
+            writer_train.add_scalar('gan_loss', g_loss.item() + d_loss.item(), epoch * iter_per_epoch + idx)
+            writer_train.add_scalar('total_loss', local_loss.item() + g_loss.item() + d_loss.item(), epoch * iter_per_epoch + idx)
 
             eval_batch(model, device, epoch, idx)
 
         if (idx + 1) % save_per_iter == 0:
-            save_model(model, model_optim, epoch, idx, local_loss.item(), global_loss.item())
+            save_model(model, model_optim, epoch, idx, local_loss.item(), g_loss.item() + d_loss.item())
 
         torch.cuda.empty_cache()
+        
         idx+=1
         
-    return epoch_local_loss, epoch_global_loss, encoded_input
+    return epoch_local_loss, epoch_gan_loss, encoded_input
 
 print('Start the training...')
 

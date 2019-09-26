@@ -5,6 +5,7 @@ import misc.utils as utils
 import misc.net_utils as net_utils
 from misc.FixedGRU import FixedGRU
 from misc.HybridCNNLong import HybridCNNLong as DocumentCNN
+from discriminator import Discriminator
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -28,7 +29,7 @@ class Model(nn.Module):
         self.encoder = DocumentCNN(self.vocab_size, args.txtSize, dropout=args.drop_prob_lm, avg=1, cnn_dim=args.cnn_dim)
         
         self.decoder = LanguageModel(self.input_encoding_size, self.rnn_size, self.seq_length, self.vocab_size, num_layers=self.num_layers, dropout=self.drop_prob_lm)
-        
+        self.discriminator = Discriminator(self.emb_size, self.hidden_size, self.vocab_size, self.seq_length, self.decoder.embedding, gpu=True, dropout=self.drop_prob_lm)
     
     def JointEmbeddingLoss(self, feature_emb1, feature_emb2):
         
@@ -64,3 +65,7 @@ class Model(nn.Module):
     def sample(self, encoded_input):
         
         return self.decoder.sample(encoded_input)
+
+    def prob2pred(self, prob):
+
+        return torch.argmax(prob, -1)

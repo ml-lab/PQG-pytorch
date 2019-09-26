@@ -57,6 +57,7 @@ class layer(nn.Module):
         else:
 
             output = torch.zeros(encoded.size()[0], self.seq_length, device=self.device)
+            probs = torch.zeros(encoded.size()[0], self.seq_length, self.vocab_size, device=self.device)
             for batch in range(encoded.size()[0]):
                 
                 encoding = encoded[batch]
@@ -73,6 +74,7 @@ class layer(nn.Module):
                         prob, h = self.core(encoding, torch.tensor([1]), h=h)
                     else:
                         prob, h = self.core(encoding, torch.tensor([1]))
+                    probs[batch, idx, :] = prob
                     prob = prob.view(1, -1)
                     prob_dist = torch.exp(prob)
                     it = torch.multinomial(prob_dist, 1)
@@ -81,7 +83,7 @@ class layer(nn.Module):
                     output[batch, idx] = it
                     idx += 1
 
-            return output # [batch_size, seq_len]
+            return output, probs # [batch_size, seq_len], [batch_size, seq_len, vocab_len]
         
 
     def sample(self, encoding, sample_max=1, beam_size=1, temperature=1.0):
