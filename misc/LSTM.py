@@ -13,7 +13,7 @@ class LSTM(nn.Module):
         self.rnn_size = rnn_size
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-    def forward(self, input_batch, lengths, h = None):
+    def forward(self, input_batch, lengths=None, h = None):
         
         '''
         input_batch : (batch_size, seq_len + 1, feat_size)
@@ -33,6 +33,7 @@ class LSTM(nn.Module):
         #     # print(out1.size())
         #     out_lstm[batch, : lengths[batch], :] = out1[:,:,:]
         #     hidden.append(h)
+        self.rnn.flatten_parameters()
         if h:
             out_lstm, hidden = self.rnn(input_batch, h)
         else :

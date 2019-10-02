@@ -33,13 +33,13 @@ class layer(nn.Module):
     def getModulesList(self):
         return [self.core, self.embedding]
 
-    def parameters(self, recurse=True):
-        params = super().parameters(recurse=recurse)
-        grad_params = [param.grad for param in params]
+    # def parameters(self, recurse=True):
+    #     params = super().parameters(recurse=recurse)
+    #     grad_params = [param.grad for param in params]
 
-        return params, grad_params
+    #     return params, grad_params
 
-    def forward(self, encoded, seq, lengths,teacher_forcing=True):
+    def forward(self, encoded, seq, lengths=None,teacher_forcing=True):
         '''
         encoded : (batch_size, feat_size)
         seq: (batch_size, seq_len)
@@ -51,7 +51,6 @@ class layer(nn.Module):
             embedded = self.embedding(seq)
             input_rnn = torch.cat([encoded.unsqueeze(1), embedded[:,:-1]], dim=1)
             
-            lengths = lengths
             output, _ = self.core(input_rnn, lengths)
             return output
         else:
@@ -83,9 +82,13 @@ class layer(nn.Module):
                     output[batch, idx] = it
                     idx += 1
 
-            return output, probs # [batch_size, seq_len], [batch_size, seq_len, vocab_len]
+            return probs # [batch_size, seq_len], [batch_size, seq_len, vocab_len]
         
 
+    def prob2pred(self, prob):
+
+        return torch.multinomial(torch.exp(prob.view(-1, prob.size(-1))), 1).view(prob.size(0), prob.size(1))
+    
     def sample(self, encoding, sample_max=1, beam_size=1, temperature=1.0):
 
         if sample_max == 1 and beam_size > 1 :

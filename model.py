@@ -6,14 +6,13 @@ import misc.net_utils as net_utils
 from misc.FixedGRU import FixedGRU
 from misc.HybridCNNLong import HybridCNNLong as DocumentCNN
 from discriminator import Discriminator
-
+import torch.optim as optim
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-class Model(nn.Module):
+class Model:
 
     def __init__(self, args, dataloader):
         
-        super(Model, self).__init__()
         self.vocab_size = dataloader.getVocabSize()
         self.input_encoding_size = args.input_encoding_size
         self.rnn_size = args.rnn_size
@@ -27,10 +26,9 @@ class Model(nn.Module):
         self.device = device
         
         self.encoder = DocumentCNN(self.vocab_size, args.txtSize, dropout=args.drop_prob_lm, avg=1, cnn_dim=args.cnn_dim)
-        
-        self.decoder = LanguageModel(self.input_encoding_size, self.rnn_size, self.seq_length, self.vocab_size, num_layers=self.num_layers, dropout=self.drop_prob_lm)
-        self.discriminator = Discriminator(self.emb_size, self.hidden_size, self.vocab_size, self.seq_length, self.decoder.embedding, gpu=True, dropout=self.drop_prob_lm)
-    
+        self.generator = LanguageModel(self.input_encoding_size, self.rnn_size, self.seq_length, self.vocab_size, num_layers=self.num_layers, dropout=self.drop_prob_lm)
+        self.discriminator = Discriminator(self.emb_size, self.hidden_size, self.vocab_size, self.seq_length, self.generator.embedding, gpu=True, dropout=self.drop_prob_lm)
+
     def JointEmbeddingLoss(self, feature_emb1, feature_emb2):
         
         batch_size = feature_emb1.size()[0]
@@ -47,25 +45,36 @@ class Model(nn.Module):
         
         return loss / denom
 
-    def forward(self, input_sentences, lengths):
-        
-        input_one_hot = torch.zeros(*input_sentences.size(), self.vocab_size, device=self.device)
-        # for batch in range(input_sentences.size()[0]):
-        #     for idx in range(input_sentences.size()[1]):
-        #         input_one_hot[batch][idx][input_sentences[batch][idx]] = 1
+    def to(self, device):
 
-        input_one_hot.scatter_(-1, input_sentences.unsqueeze(-1), 1) # [batch_size, seq_len, vocab_len]
-        
-        encoded = self.encoder(input_one_hot)
-        
-        probs = self.decoder(encoded, input_sentences, lengths) # (batch_size, seq_len, vocab_len)
-        
-        return (probs, encoded) # (batch_size, seq_len , vocab_size), (batch_size, feat_size)
+        self.generator = self.generator.to(device)
+        self.encoder = self.encoder.to(device)
+        self.discriminator = self.discriminator.to(device)
 
-    def sample(self, encoded_input):
+        return self
+
+    def train(self):
         
-        return self.decoder.sample(encoded_input)
+        self.generator.train()
+        self.encoder.train()
+        self.discriminator.train()
+
+        return self
+    
+    def eval(self):
+        
+        self.generator.eval()
+        self.encoder.eval()
+        self.discriminator.eval()
+
+        return self
+    
+    def make_opt(self, lr, decay_factor=None, every_iter=None):
+
+        self.e_opt = optim.RMSprop(self.encoder.parameters(), lr=lr)
+        self.g_opt = optim.RMSprop(self.generator.parameters(), lr=lr)
+        self.d_opt = optim.RMSprop(self.discriminator.parameters(), lr=lr)        
 
     def prob2pred(self, prob):
 
-        return torch.argmax(prob, -1)
+        return self.generator.prob2pred(prob)

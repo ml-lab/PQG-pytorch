@@ -97,6 +97,7 @@ def make_parser():
     parser.add_argument('--iterPerEpoch', default=1250, type=int)
     parser.add_argument('--drop_prob_lm', type=float, default=0.5, help='strength of drop_prob_lm in the Language Model RNN')
     parser.add_argument('--n_epoch', type=int, default=1, help='number of epochs during training')
+    parser.add_argument('--roll', type=int, default=16, help='number of roll during rollout')
 
     # Evaluation/Checkpointing
 

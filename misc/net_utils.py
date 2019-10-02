@@ -1,4 +1,5 @@
 import misc.utils as utils
+import torch
 
 def decode_sequence(ix_to_word, seq):
     N, D = seq.size()[0], seq.size()[1]
@@ -41,3 +42,6 @@ def language_eval(predictions, id):
     subprocess.run(['./misc/call_python_caption_eval.sh', 'val' + id + '.json'])
     result_struct = utils.read_json('coco-caption/val'+id+'.json_out.json')
     return result_struct
+
+def one_hot(x, c):
+    return torch.zeros(*x.size(), c, device=x.device).scatter_(-1, x.unsqueeze(-1), 1)
