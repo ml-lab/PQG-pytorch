@@ -17,6 +17,8 @@ import os
 import math
 from rollout import Rollout
 import gc
+from discriminator import Discriminator
+
 parser = utils.make_parser()
 args = parser.parse_args()
 
@@ -31,11 +33,11 @@ if args.start_from != 'None':
     folder = args.start_from.split('/')[-2]
 else :
     folder = time.strftime("%d-%m-%Y_%H:%M:%S")
+    folder = args.name + folder
     subprocess.run(['mkdir', os.path.join(save_folder, folder)])
     subprocess.run(['mkdir', os.path.join(sample_folder, folder)])
 
 file_sample = os.path.join('samples', folder, 'samples')
-
 
 import itertools
 
@@ -67,62 +69,65 @@ def getObjsForScores(real_sents, pred_sents):
 
     return coco(real_sents), coco(pred_sents)
 
-def eval_batch(model, test_loader_iter, epoch, it, writer_val, sample_flag=False):
+def eval_batch(encoder, generator, discriminator, test_loader_iter, writer_val, log_idx=0, sample_flag=False):
     
-    with torch.no_grad():
-        if it == iter_per_epoch - 1:
-            sample_flag == True
-        seq, seq_len, sim_seq, sim_seq_len, _ = next(test_loader_iter)
-        seq, seq_len, sim_seq, sim_seq_len = seq.to(model.device), seq_len.to(model.device), sim_seq.to(model.device), sim_seq_len.to(model.device)
+    encoder.eval()
+    generator.eval()
+    discriminator.eval()
+    # with torch.no_grad():
+    device = generator.module.device
+    vocab_size = data.getVocabSize()
+    seq, seq_len, sim_seq, sim_seq_len, _ = next(test_loader_iter)
+    seq, seq_len, sim_seq, sim_seq_len = seq.to(device), seq_len.to(device), sim_seq.to(device), sim_seq_len.to(device)
 
-        prob_seq = model.generator.sample(model.encoder(net_utils.one_hot(seq, model.vocab_size)))
-        pred_seq = model.prob2pred(prob_seq)
-        # local loss criterion
-        loss_f = nn.CrossEntropyLoss()
+    prob_seq = generator(encoder(net_utils.one_hot(seq, vocab_size)), teacher_forcing=False)
+    pred_seq = net_utils.prob2pred(prob_seq)
+    # local loss criterion
+    loss_f = nn.CrossEntropyLoss()
 
-        # compute local loss
-        local_loss = loss_f(prob_seq.permute(0, 2, 1), seq) # sim_seq or seq
+    # compute local loss
+    local_loss = loss_f(prob_seq.permute(0, 2, 1), sim_seq) # sim_seq or seq
+    
+    binary_loss = nn.BCELoss()
+
+    pred_real = discriminator(pred_seq) 
+
+    pred_real_real = discriminator(sim_seq) # sim_seq or seq
+    
+    g_loss = binary_loss(pred_real, discriminator.module.out_tensor(pred_real, 'real'))
+    d_loss = binary_loss(pred_real_real, discriminator.module.out_tensor(pred_real_real, 'real')) + binary_loss(pred_real, discriminator.module.out_tensor(pred_real, 'fake'))
+
+    writer_val.add_scalar('local_loss', local_loss.item(), log_idx)
+    writer_val.add_scalar('g_loss_cross_entropy', g_loss.item() , log_idx)
+    writer_val.add_scalar('d_loss', d_loss.item(), log_idx)
+    
+    if sample_flag:
+        pred_seq = pred_seq.long()
+        sents = net_utils.decode_sequence(data.ix_to_word, pred_seq)
+        inp_sents = net_utils.decode_sequence(data.ix_to_word, seq)
+        sim_out_sents = net_utils.decode_sequence(data.ix_to_word, sim_seq)
         
-        binary_loss = nn.BCELoss()
+        coco, cocoRes = getObjsForScores(sim_out_sents, sents)
 
-        pred_real = model.discriminator(pred_seq) 
+        evalObj = COCOEvalCap(coco, cocoRes)
 
-        pred_real_real = model.discriminator(sim_seq) # sim_seq or seq
+        evalObj.evaluate()
+
+        for key in evalObj.eval:
+            writer_val.add_scalar(key, evalObj.eval[key], log_idx)
+
+        f_sample = open(file_sample + str(log_idx) + '.txt', 'w')
         
-        g_loss = binary_loss(pred_real, model.discriminator.out_tensor(pred_real, 'real'))
-        d_loss = binary_loss(pred_real_real, model.discriminator.out_tensor(pred_real_real, 'real')) + binary_loss(pred_real, model.discriminator.out_tensor(pred_real, 'fake'))
+        idx = 1
+        for r, s, t in zip(inp_sents, sim_out_sents, sents):
 
-        writer_val.add_scalar('local_loss', local_loss.item(), epoch * iter_per_epoch + it)
-        writer_val.add_scalar('g_loss_cross_entropy', g_loss.item() , epoch * iter_per_epoch + it)
-        writer_val.add_scalar('d_loss', d_loss.item(), epoch * iter_per_epoch + it)
-        
-        if sample_flag:
-            pred_seq = pred_seq.long()
-            sents = net_utils.decode_sequence(data.ix_to_word, pred_seq)
-            inp_sents = net_utils.decode_sequence(data.ix_to_word, seq)
-            sim_out_sents = net_utils.decode_sequence(data.ix_to_word, sim_seq)
-            
-            coco, cocoRes = getObjsForScores(sim_out_sents, sents)
+            f_sample.write(str(idx) + '\ninp : ' + r + '\nout : ' + s + '\npred : ' + t + '\n\n')
+            idx += 1
 
-            evalObj = COCOEvalCap(coco, cocoRes)
-
-            evalObj.evaluate()
-
-            for key in evalObj.eval:
-                writer_val.add_scalar(key, evalObj.eval[key], epoch * iter_per_epoch + it)
-
-            f_sample = open(file_sample + str(epoch) + '_' + str(it) + '.txt', 'w')
-            
-            idx = 1
-            for r, s, t in zip(inp_sents, sim_out_sents, sents):
-
-                f_sample.write(str(idx) + '\ninp : ' + r + '\nout : ' + s + '\npred : ' + t + '\n\n')
-                idx += 1
-
-            f_sample.close()
-        if it == iter_per_epoch - 1:
-            save_model(model, epoch, it, local_loss, g_loss, d_loss)
-        torch.cuda.empty_cache()
+        f_sample.close()
+    # if it == iter_per_epoch - 1:
+    #     save_model(model, epoch, it, local_loss, g_loss, d_loss)
+    torch.cuda.empty_cache()
 
 def save_model(model, epoch, it, local_loss, g_loss, d_loss):
 
@@ -141,110 +146,134 @@ def save_model(model, epoch, it, local_loss, g_loss, d_loss):
 
     torch.save(checkpoint, PATH)
 
-def pre_epoch_training(model, dataloader, writer_train, g_epoch=1, d_epoch=1):
+def pre_epoch_training(encoder, generator, discriminator, e_optim, g_optim, d_optim, dataloader, writer_train, g_epoch=1, d_epoch=1):
 
-    model.train()
+    encoder.train()
+    generator.train()
+    discriminator.train()
     loss_f = nn.NLLLoss(reduction='mean')
-    loss_f = loss_f.to(model.device)
-
+    loss_f = loss_f.to(generator.device)
+    device = generator.device
+    vocab_size = data.getVocabSize()
+    generator = nn.DataParallel(generator)
     print('Pre training Generator ...')
 
     for epoch in range(g_epoch):
         idx = 0
         for seq, seq_len, sim_seq, sim_seq_len, _ in dataloader:
 
-            seq, seq_len, sim_seq, sim_seq_len = seq.to(model.device), seq_len.to(model.device), sim_seq.to(model.device), sim_seq_len.to(model.device)
-            seq_one_hot = net_utils.one_hot(seq, model.vocab_size)
-            encoded_seq = model.encoder(seq_one_hot)
-            prob_sim_seq = model.generator(encoded_seq, seq, seq_len)
-            g_loss = loss_f(prob_sim_seq.permute(0, 2, 1), seq)
-            model.e_opt.zero_grad()
-            model.g_opt.zero_grad()
+            seq, seq_len, sim_seq, sim_seq_len = seq.to(device), seq_len.to(device), sim_seq.to(device), sim_seq_len.to(device)
+            seq_one_hot = net_utils.one_hot(seq, vocab_size)
+            encoded_seq = encoder(seq_one_hot)
+            print(gc.collect(), end='-')
+            prob_sim_seq = generator(encoded_seq, true_out=sim_seq)
+            g_loss = loss_f(prob_sim_seq.permute(0, 2, 1), sim_seq)
+            e_optim.zero_grad()
+            g_optim.zero_grad()
             g_loss.backward()
-            model.e_opt.step()
-            model.g_opt.step()
+            e_optim.step()
+            g_optim.step()
             idx += 1
             # writer_train.add_scalar('pre_train_generator_NLL_loss', g_loss, idx)
     
             torch.cuda.empty_cache()
-            gc.collect()
+            print(gc.collect(), end=' ')
+
     print('Pre training Discriminator ...')
     d_loss_f = nn.BCELoss()
-    d_loss_f = d_loss_f.to(model.device)
+    d_loss_f = d_loss_f.to(device)
     for epoch in range(d_epoch):
         idx = 0
         for seq, seq_len, sim_seq, sim_seq_len, _ in dataloader:
             
-            seq, seq_len, sim_seq, sim_seq_len = seq.to(model.device), seq_len.to(model.device), sim_seq.to(model.device), sim_seq_len.to(model.device)
-            seq_one_hot = net_utils.one_hot(seq, model.vocab_size)
-            encoded_seq = model.encoder(seq_one_hot)
-            prob_sim_seq = model.generator.sample(encoded_seq)
-            pred_sim_seq = model.prob2pred(prob_sim_seq)
-            d_fake = model.discriminator(pred_sim_seq)
-            d_real = model.discriminator(sim_seq) # sim_seq OR seq ???
-            d_loss = d_loss_f(d_fake, model.discriminator.out_tensor(d_fake, 'fake')) + d_loss_f(d_real, model.discriminator.out_tensor(d_real, 'real'))
-            model.d_opt.zero_grad()
+            seq, seq_len, sim_seq, sim_seq_len = seq.to(device), seq_len.to(device), sim_seq.to(device), sim_seq_len.to(device)
+            seq_one_hot = net_utils.one_hot(seq, vocab_size)
+            encoded_seq = encoder(seq_one_hot)
+            print(gc.collect(), end='-')
+            torch.cuda.empty_cache()
+            prob_sim_seq = generator(encoded_seq, true_out=sim_seq)
+            pred_sim_seq = net_utils.prob2pred(prob_sim_seq)
+            d_fake = discriminator(pred_sim_seq)
+            d_real = discriminator(sim_seq)
+            d_loss = d_loss_f(d_fake, discriminator.out_tensor(d_fake, 'fake')) + d_loss_f(d_real, discriminator.out_tensor(d_real, 'real'))
+            d_optim.zero_grad()
             d_loss.backward()
-            model.d_opt.step()
+            d_optim.step()
             idx += 1
             # writer_train.add_scalar('pre_train_discriminator_BCE_loss', d_loss, idx)
             torch.cuda.empty_cache()
-            gc.collect()
-def train_epoch(model, rollout, train_loader, test_loader, writer_train, writer_val, epoch=0, log_per_iter=args.log_every):
+            print(gc.collect(), end=' ')
 
-    model.train()
+def train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, rollout, train_loader, test_loader, writer_train, writer_val, log_idx=0, log_per_iter=args.log_every):
+
+    encoder.train()
+    generator.train()
+    discriminator.train()
     d_loss_f = nn.BCELoss()
-    d_loss_f = d_loss_f.to(model.device)
-
+    d_loss_f = d_loss_f.to(generator.device)
+    device = generator.device
+    vocab_size = data.getVocabSize()
+    batch_size = args.batch_size
     idx = 0
     loss_f = nn.CrossEntropyLoss()
+    generator = nn.DataParallel(generator)
+    discriminator = nn.DataParallel(discriminator)
+    g_loss = 0
+    d_loss = 0
+    local_loss = 0
+
     for batch in train_loader:
         
         if idx == 0:
             print('Generator training ...')
         # get new batch
         seq, seq_len, sim_seq, sim_seq_len, _ = batch
-        seq, seq_len, sim_seq, sim_seq_len = seq.to(model.device), seq_len.to(model.device), sim_seq.to(model.device), sim_seq_len.to(model.device)
+        seq, seq_len, sim_seq, sim_seq_len = seq.to(device), seq_len.to(device), sim_seq.to(device), sim_seq_len.to(device)
         
-        seq_one_hot = net_utils.one_hot(seq, model.vocab_size)
+        seq_one_hot = net_utils.one_hot(seq, vocab_size)
 
-        encoded = model.encoder(seq_one_hot)
-        prob_sim_seq_l = model.generator.sample(encoded)
-        local_loss = loss_f(prob_sim_seq_l.permute(0, 2, 1), seq)
-        pred_sim_seq = model.prob2pred(prob_sim_seq_l)
-        rewards = torch.Tensor(rollout.get_reward(pred_sim_seq, args.roll, model.discriminator))
+        encoded = encoder(seq_one_hot)
+        prob_sim_seq_l = generator(encoded, teacher_forcing=False)
+        local_loss = loss_f(prob_sim_seq_l.permute(0, 2, 1), sim_seq)
+        pred_sim_seq = net_utils.prob2pred(prob_sim_seq_l)
+        rewards = torch.Tensor(rollout.get_reward(pred_sim_seq, args.roll, discriminator))
         rewards = torch.exp(rewards).contiguous().view((-1, ))
-        rewards = rewards.to(model.device)
+        rewards = rewards.to(device)
 
-        prob_sim_seq = model.generator(model.encoder(net_utils.one_hot(pred_sim_seq, model.vocab_size)), pred_sim_seq)
-        g_loss = gan_loss_f(prob_sim_seq, pred_sim_seq.contiguous().view((-1)), rewards) / model.batch_size
-        model.g_opt.zero_grad()
-        model.e_opt.zero_grad()
+        prob_sim_seq = generator(encoder(net_utils.one_hot(pred_sim_seq, vocab_size)), true_out=pred_sim_seq)
+        g_loss = gan_loss_f(prob_sim_seq, pred_sim_seq.contiguous().view((-1)), rewards) / batch_size
+        g_optim.zero_grad()
+        e_optim.zero_grad()
         (g_loss + local_loss).backward()
-        model.e_opt.step()
-        model.g_opt.step()
-        writer_train.add_scalar('g_loss', g_loss.item(), epoch * iter_per_epoch + idx)
-        writer_train.add_scalar('local_loss', local_loss.item(), epoch * iter_per_epoch + idx)
+        e_optim.step()
+        g_optim.step()
 
         rollout.update_params()
         
         if idx == 0:
             print('Discriminator training ...')
             
-        seq_one_hot = net_utils.one_hot(seq, model.vocab_size)
-        encoded_seq = model.encoder(seq_one_hot)
-        prob_sim_seq = model.generator.sample(encoded_seq)
-        pred_sim_seq = model.prob2pred(prob_sim_seq)
-        d_fake = model.discriminator(pred_sim_seq)
-        d_real = model.discriminator(sim_seq) # sim_seq OR seq ???
-        d_loss = d_loss_f(d_fake, model.discriminator.out_tensor(d_fake, 'fake')) + d_loss_f(d_real, model.discriminator.out_tensor(d_real, 'real'))
-        model.d_opt.zero_grad()
+        seq_one_hot = net_utils.one_hot(seq, vocab_size)
+        encoded_seq = encoder(seq_one_hot)
+        prob_sim_seq = generator(encoded_seq, teacher_forcing=False)
+        pred_sim_seq = net_utils.prob2pred(prob_sim_seq)
+        d_fake = discriminator(pred_sim_seq)
+        d_real = discriminator(sim_seq) # sim_seq OR seq ???
+        d_loss = d_loss_f(d_fake, discriminator.module.out_tensor(d_fake, 'fake')) + d_loss_f(d_real, discriminator.module.out_tensor(d_real, 'real'))
+        d_optim.zero_grad()
         d_loss.backward()
-        model.d_opt.step()    
-        writer_train.add_scalar('d_loss', d_loss.item(), idx)
-        eval_batch(model, test_loader, epoch, idx, writer_val, sample_flag=((idx+1)%log_per_iter == 0))
+        d_optim.step()    
         torch.cuda.empty_cache()
+        print(idx, end='-', flush=True)
         idx += 1
+
+    writer_train.add_scalar('g_loss', g_loss.item(), log_idx)
+    writer_train.add_scalar('local_loss', local_loss.item(), log_idx)
+    writer_train.add_scalar('d_loss', d_loss.item(), log_idx)
+    eval_batch(encoder, generator, discriminator, test_loader_iter, writer_val, log_idx = log_idx,sample_flag=True)
+    log_idx+=1
+
+    return log_idx
 
 def gan_loss_f(prob, target, reward):
     """
@@ -266,20 +295,24 @@ def gan_loss_f(prob, target, reward):
 
 if __name__ == '__main__' :
 
-    # make model
-    model = Model(args, data)
+    # make modela
+    encoder = DocumentCNN(data.getVocabSize(), args.txtSize, dropout=args.drop_prob_lm, avg=1, cnn_dim=args.cnn_dim)
+    generator = LanguageModel(args.input_encoding_size, args.rnn_size, data.getSeqLength(), data.getVocabSize(), num_layers=args.rnn_layers, dropout=args.drop_prob_lm)
+    discriminator = Discriminator(args.input_encoding_size, args.input_encoding_size, data.getVocabSize(), data.getSeqLength(), generator.embedding, gpu=True, dropout=args.drop_prob_lm)
 
     # decay_factor = math.exp(math.log(0.1) / (1500 * 1250))
-
-    model.make_opt(0.0008)
+    lr = 0.0008
+    e_optim = optim.RMSprop(encoder.parameters(), lr=lr)
+    g_optim = optim.RMSprop(generator.parameters(), lr=lr)
+    d_optim = optim.RMSprop(discriminator.parameters(), lr=lr)
 
     if args.start_from != 'None':
 
         print('loading model from ' + args.start_from)
         checkpoint = torch.load(args.start_from, map_location=torch.device('cpu'))
-        model.encoder.load_state_dict(checkpoint['encoder_state_dict'])
-        model.generator.load_state_dict(checkpoint['generator_state_dict'])
-        model.discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
+        encoder.load_state_dict(checkpoint['encoder_state_dict'])
+        generator.load_state_dict(checkpoint['generator_state_dict'])
+        discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         # lr = 0.0008 * (decay_factor ** (start_epoch))
         # for opt in model.get_opt():
@@ -292,21 +325,29 @@ if __name__ == '__main__' :
 
     # sheduler = torch.optim.lr_scheduler.StepLR(model_optim, step_size=1, gamma=decay_factor)
 
-    model = model.to(device)
+    encoder = encoder.to(device)
+    generator = generator.to(device)
+    discriminator = discriminator.to(device)
 
     n_epoch = args.n_epoch
 
-    model.train()
+    encoder.train()
+    generator.train()
+    discriminator.train()
+
     print('Pre epoch training of generator and discriminator...')
-    # pre_epoch_training(model, train_loader, writer_train)
+    pre_epoch_training(encoder, generator, discriminator, e_optim, g_optim, d_optim, train_loader, writer_train)
+
+    print('Roll model ...')
+
+    rollout = Rollout(encoder, nn.DataParallel(generator), data.getVocabSize(), 0.8)
 
     print('Adversarial training starts ...')
-
-    rollout = Rollout(model.encoder, model.generator, 0.8)
+    log_idx = 0
 
     for epoch in range(start_epoch, start_epoch + n_epoch):
 
-        train_epoch(model, rollout, train_loader, test_loader_iter, writer_train, writer_val, epoch=epoch)
+        log_idx = train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, rollout, train_loader, test_loader_iter, writer_train, writer_val, log_idx=log_idx)
         # sheduler.step()
 
         # n_batch = data.getDataNum(1) // args.batch_size

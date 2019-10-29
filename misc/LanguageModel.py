@@ -3,7 +3,7 @@ import torch.nn as nn
 import misc.utils as utils
 import misc.net_utils as net_utils
 from misc.LSTM import LSTM
-
+import gc
 class Struct:
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -39,23 +39,21 @@ class layer(nn.Module):
 
     #     return params, grad_params
 
-    def forward(self, encoded, seq, lengths=None,teacher_forcing=True):
+    def forward(self, encoded, lengths=None,teacher_forcing=True, true_out=None):
         '''
         encoded : (batch_size, feat_size)
         seq: (batch_size, seq_len)
         lengths: (batch_size, )
         '''
-        
         if teacher_forcing:
             
-            embedded = self.embedding(seq)
+            embedded = self.embedding(true_out)
             input_rnn = torch.cat([encoded.unsqueeze(1), embedded[:,:-1]], dim=1)
             
             output, _ = self.core(input_rnn, lengths)
             return output
         else:
 
-            output = torch.zeros(encoded.size()[0], self.seq_length, device=self.device)
             probs = torch.zeros(encoded.size()[0], self.seq_length, self.vocab_size, device=self.device)
             for batch in range(encoded.size()[0]):
                 
@@ -79,16 +77,12 @@ class layer(nn.Module):
                     it = torch.multinomial(prob_dist, 1)
                     encoding = self.embedding(it)
                     
-                    output[batch, idx] = it
                     idx += 1
+
 
             return probs # [batch_size, seq_len], [batch_size, seq_len, vocab_len]
         
 
-    def prob2pred(self, prob):
-
-        return torch.multinomial(torch.exp(prob.view(-1, prob.size(-1))), 1).view(prob.size(0), prob.size(1))
-    
     def sample(self, encoding, sample_max=1, beam_size=1, temperature=1.0):
 
         if sample_max == 1 and beam_size > 1 :

@@ -15,15 +15,12 @@ def decode_sequence(ix_to_word, seq):
             else:
                 word = ix_to_word[int(ix.item())]
             
-            if EOS_flag and word == '<UNK>':
-                break
-
-            if word != '<EOS>' and word != '<PAD>':
-                if j >= 1:
-                    txt = txt + ' '
-                txt = txt + word
-            else :
-                EOS_flag = True
+            if word == '<PAD>':
+                word = ''
+            
+            if j > 0:
+                txt = txt + ' '
+            txt = txt + word
         out.append(txt)
     return out
 
@@ -45,3 +42,7 @@ def language_eval(predictions, id):
 
 def one_hot(x, c):
     return torch.zeros(*x.size(), c, device=x.device).scatter_(-1, x.unsqueeze(-1), 1)
+
+def prob2pred(prob):
+
+    return torch.multinomial(torch.exp(prob.view(-1, prob.size(-1))), 1).view(prob.size(0), prob.size(1))
