@@ -295,7 +295,7 @@ def gan_loss_f(prob, target, reward):
 
 if __name__ == '__main__' :
 
-    # make modela
+    # make model
     encoder = DocumentCNN(data.getVocabSize(), args.txtSize, dropout=args.drop_prob_lm, avg=1, cnn_dim=args.cnn_dim)
     generator = LanguageModel(args.input_encoding_size, args.rnn_size, data.getSeqLength(), data.getVocabSize(), num_layers=args.rnn_layers, dropout=args.drop_prob_lm)
     discriminator = Discriminator(args.input_encoding_size, args.input_encoding_size, data.getVocabSize(), data.getSeqLength(), generator.embedding, gpu=True, dropout=args.drop_prob_lm)
@@ -348,15 +348,7 @@ if __name__ == '__main__' :
     for epoch in range(start_epoch, start_epoch + n_epoch):
 
         log_idx = train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, rollout, train_loader, test_loader_iter, writer_train, writer_val, log_idx=log_idx)
-        # sheduler.step()
-
-        # n_batch = data.getDataNum(1) // args.batch_size
-        
-        # local_loss = local_loss / n_batch
-        # global_loss = global_loss / n_batch
         
         print('epoch = ', epoch)
-        # eval_batch(model, device, epoch + 1, -1)
 
     print('Done !!!')
-    
