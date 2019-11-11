@@ -237,8 +237,10 @@ def train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, ro
         local_loss = loss_f(prob_sim_seq_l.permute(0, 2, 1), sim_seq)
         pred_sim_seq = net_utils.prob2pred(prob_sim_seq_l)
         rewards = torch.Tensor(rollout.get_reward(pred_sim_seq, args.roll, discriminator))
+        print(rewards.size(), end='||', flush=True)
         rewards = torch.exp(rewards).contiguous().view((-1, ))
         rewards = rewards.to(device)
+        print(rewards.size(), end='|', flush=True)
 
         prob_sim_seq = generator(encoder(net_utils.one_hot(pred_sim_seq, vocab_size)), true_out=pred_sim_seq)
         g_loss = gan_loss_f(prob_sim_seq, pred_sim_seq.contiguous().view((-1)), rewards) / batch_size
@@ -298,7 +300,7 @@ if __name__ == '__main__' :
     # make model
     encoder = DocumentCNN(data.getVocabSize(), args.txtSize, dropout=args.drop_prob_lm, avg=1, cnn_dim=args.cnn_dim)
     generator = LanguageModel(args.input_encoding_size, args.rnn_size, data.getSeqLength(), data.getVocabSize(), num_layers=args.rnn_layers, dropout=args.drop_prob_lm)
-    discriminator = Discriminator(args.input_encoding_size, args.input_encoding_size, data.getVocabSize(), data.getSeqLength(), generator.embedding, gpu=True, dropout=args.drop_prob_lm)
+    discriminator = Discriminator(encoder, args.cnn_dim, data.getVocabSize(), dropout=args.drop_prob_lm)
 
     # decay_factor = math.exp(math.log(0.1) / (1500 * 1250))
     lr = 0.0008
@@ -349,6 +351,6 @@ if __name__ == '__main__' :
 
         log_idx = train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, rollout, train_loader, test_loader_iter, writer_train, writer_val, log_idx=log_idx)
         
-        print('epoch = ', epoch)
+        print('epoch = ', epoch, flush=True)
 
     print('Done !!!')

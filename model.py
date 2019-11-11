@@ -32,18 +32,18 @@ class Model:
     def JointEmbeddingLoss(self, feature_emb1, feature_emb2):
         
         batch_size = feature_emb1.size()[0]
-        loss = 0
-        for i in range(batch_size):
-            label_score = torch.dot(feature_emb1[i], feature_emb2[i])
-            for j in range(batch_size):
-                cur_score = torch.dot(feature_emb2[i], feature_emb1[j])
-                score = cur_score - label_score + 1
-                if 0 < score.item():
-                    loss += max(0, cur_score - label_score + 1)
+        # loss = 0
+        # for i in range(batch_size):
+        #     label_score = torch.dot(feature_emb1[i], feature_emb2[i])
+        #     for j in range(batch_size):
+        #         cur_score = torch.dot(feature_emb2[i], feature_emb1[j])
+        #         score = cur_score - label_score + 1
+        #         if 0 < score.item():
+        #             loss += max(0, cur_score - label_score + 1)
 
-        denom = batch_size * batch_size
+        # denom = batch_size * batch_size
         
-        return loss / denom
+        return torch.sum(torch.clamp(torch.mm(feature_emb1, feature_emb2.t()) - torch.sum(feature_emb1 * feature_emb2, dim=-1) + 1, min=0.0)) / (batch_size * batch_size)
 
     def to(self, device):
 
