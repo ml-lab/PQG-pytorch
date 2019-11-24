@@ -70,64 +70,64 @@ def getObjsForScores(real_sents, pred_sents):
     return coco(real_sents), coco(pred_sents)
 
 def eval_batch(encoder, generator, discriminator, test_loader_iter, writer_val, log_idx=0, sample_flag=False):
-    
+    '''
     encoder.eval()
     generator.eval()
-    discriminator.eval()
-    # with torch.no_grad():
-    device = generator.module.device
-    vocab_size = data.getVocabSize()
-    seq, seq_len, sim_seq, sim_seq_len, _ = next(test_loader_iter)
-    seq, seq_len, sim_seq, sim_seq_len = seq.to(device), seq_len.to(device), sim_seq.to(device), sim_seq_len.to(device)
+    discriminator.eval()'''
+    with torch.no_grad():
+        device = generator.module.device
+        vocab_size = data.getVocabSize()
+        seq, seq_len, sim_seq, sim_seq_len, _ = next(test_loader_iter)
+        seq, seq_len, sim_seq, sim_seq_len = seq.to(device), seq_len.to(device), sim_seq.to(device), sim_seq_len.to(device)
 
-    prob_seq = generator(encoder(net_utils.one_hot(seq, vocab_size)), teacher_forcing=False)
-    pred_seq = net_utils.prob2pred(prob_seq)
-    # local loss criterion
-    loss_f = nn.CrossEntropyLoss()
+        prob_seq = generator.forward(encoder(net_utils.one_hot(seq, vocab_size)), teacher_forcing=False)
+        pred_seq = net_utils.prob2pred(prob_seq)
+        # local loss criterion
+        loss_f = nn.CrossEntropyLoss()
 
-    # compute local loss
-    local_loss = loss_f(prob_seq.permute(0, 2, 1), sim_seq) # sim_seq or seq
-    
-    binary_loss = nn.BCELoss()
-
-    pred_real = discriminator(pred_seq) 
-
-    pred_real_real = discriminator(sim_seq) # sim_seq or seq
-    
-    g_loss = binary_loss(pred_real, discriminator.module.out_tensor(pred_real, 'real'))
-    d_loss = binary_loss(pred_real_real, discriminator.module.out_tensor(pred_real_real, 'real')) + binary_loss(pred_real, discriminator.module.out_tensor(pred_real, 'fake'))
-
-    writer_val.add_scalar('local_loss', local_loss.item(), log_idx)
-    writer_val.add_scalar('g_loss_cross_entropy', g_loss.item() , log_idx)
-    writer_val.add_scalar('d_loss', d_loss.item(), log_idx)
-    
-    if sample_flag:
-        pred_seq = pred_seq.long()
-        sents = net_utils.decode_sequence(data.ix_to_word, pred_seq)
-        inp_sents = net_utils.decode_sequence(data.ix_to_word, seq)
-        sim_out_sents = net_utils.decode_sequence(data.ix_to_word, sim_seq)
+        # compute local loss
+        local_loss = loss_f(prob_seq.permute(0, 2, 1), sim_seq) # sim_seq or seq
         
-        coco, cocoRes = getObjsForScores(sim_out_sents, sents)
+        binary_loss = nn.BCELoss()
 
-        evalObj = COCOEvalCap(coco, cocoRes)
+        # pred_real = discriminator(pred_seq) 
 
-        evalObj.evaluate()
-
-        for key in evalObj.eval:
-            writer_val.add_scalar(key, evalObj.eval[key], log_idx)
-
-        f_sample = open(file_sample + str(log_idx) + '.txt', 'w')
+        # pred_real_real = discriminator(sim_seq) # sim_seq or seq
         
-        idx = 1
-        for r, s, t in zip(inp_sents, sim_out_sents, sents):
+        # g_loss = binary_loss(pred_real, discriminator.module.out_tensor(pred_real, 'real'))
+        # d_loss = binary_loss(pred_real_real, discriminator.module.out_tensor(pred_real_real, 'real')) + binary_loss(pred_real, discriminator.module.out_tensor(pred_real, 'fake'))
+        d_loss = discriminator(pred_seq, sim_seq)
+        writer_val.add_scalar('local_loss', local_loss.item(), log_idx)
+        # writer_val.add_scalar('g_loss_cross_entropy', g_loss.item() , log_idx)
+        writer_val.add_scalar('d_loss', d_loss.item(), log_idx)
+        
+        if sample_flag:
+            pred_seq = pred_seq.long()
+            sents = net_utils.decode_sequence(data.ix_to_word, pred_seq)
+            inp_sents = net_utils.decode_sequence(data.ix_to_word, seq)
+            sim_out_sents = net_utils.decode_sequence(data.ix_to_word, sim_seq)
+            
+            coco, cocoRes = getObjsForScores(sim_out_sents, sents)
 
-            f_sample.write(str(idx) + '\ninp : ' + r + '\nout : ' + s + '\npred : ' + t + '\n\n')
-            idx += 1
+            evalObj = COCOEvalCap(coco, cocoRes)
 
-        f_sample.close()
-    # if it == iter_per_epoch - 1:
-    #     save_model(model, epoch, it, local_loss, g_loss, d_loss)
-    torch.cuda.empty_cache()
+            evalObj.evaluate()
+
+            for key in evalObj.eval:
+                writer_val.add_scalar(key, evalObj.eval[key], log_idx)
+
+            f_sample = open(file_sample + str(log_idx) + '.txt', 'w')
+            
+            idx = 1
+            for r, s, t in zip(inp_sents, sim_out_sents, sents):
+
+                f_sample.write(str(idx) + '\ninp : ' + r + '\nout : ' + s + '\npred : ' + t + '\n\n')
+                idx += 1
+
+            f_sample.close()
+        # if it == iter_per_epoch - 1:
+        #     save_model(model, epoch, it, local_loss, g_loss, d_loss)
+        torch.cuda.empty_cache()
 
 def save_model(model, epoch, it, local_loss, g_loss, d_loss):
 
@@ -193,9 +193,10 @@ def pre_epoch_training(encoder, generator, discriminator, e_optim, g_optim, d_op
             torch.cuda.empty_cache()
             prob_sim_seq = generator(encoded_seq, true_out=sim_seq)
             pred_sim_seq = net_utils.prob2pred(prob_sim_seq)
-            d_fake = discriminator(pred_sim_seq)
-            d_real = discriminator(sim_seq)
-            d_loss = d_loss_f(d_fake, discriminator.out_tensor(d_fake, 'fake')) + d_loss_f(d_real, discriminator.out_tensor(d_real, 'real'))
+            # d_fake = discriminator(pred_sim_seq)
+            # d_real = discriminator(sim_seq)
+            # d_loss = d_loss_f(d_fake, discriminator.out_tensor(d_fake, 'fake')) + d_loss_f(d_real, discriminator.out_tensor(d_real, 'real'))
+            d_loss = discriminator(pred_sim_seq, sim_seq)
             d_optim.zero_grad()
             d_loss.backward()
             d_optim.step()
@@ -206,18 +207,13 @@ def pre_epoch_training(encoder, generator, discriminator, e_optim, g_optim, d_op
 
 def train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, rollout, train_loader, test_loader, writer_train, writer_val, log_idx=0, log_per_iter=args.log_every):
 
-    encoder.train()
-    generator.train()
-    discriminator.train()
     d_loss_f = nn.BCELoss()
-    d_loss_f = d_loss_f.to(generator.device)
-    device = generator.device
+    d_loss_f = d_loss_f.to(generator.module.device)
+    device = generator.module.device
     vocab_size = data.getVocabSize()
     batch_size = args.batch_size
     idx = 0
     loss_f = nn.CrossEntropyLoss()
-    generator = nn.DataParallel(generator)
-    discriminator = nn.DataParallel(discriminator)
     g_loss = 0
     d_loss = 0
     local_loss = 0
@@ -233,16 +229,15 @@ def train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, ro
         seq_one_hot = net_utils.one_hot(seq, vocab_size)
 
         encoded = encoder(seq_one_hot)
-        prob_sim_seq_l = generator(encoded, teacher_forcing=False)
+        prob_sim_seq_l = generator(encoded, true_out=sim_seq) #changed forcing ---------------- 
         local_loss = loss_f(prob_sim_seq_l.permute(0, 2, 1), sim_seq)
         pred_sim_seq = net_utils.prob2pred(prob_sim_seq_l)
-        rewards = torch.Tensor(rollout.get_reward(pred_sim_seq, args.roll, discriminator))
-        print(rewards.size(), end='||', flush=True)
-        rewards = torch.exp(rewards).contiguous().view((-1, ))
-        rewards = rewards.to(device)
-        print(rewards.size(), end='|', flush=True)
+        rewards = rollout.get_reward(pred_sim_seq, args.roll, discriminator, sim_seq)
+        # rewards = torch.exp(rewards).contiguous().view((-1, ))
+        rewards = torch.exp(rewards)
+        # rewards = rewards.to(device)
 
-        prob_sim_seq = generator(encoder(net_utils.one_hot(pred_sim_seq, vocab_size)), true_out=pred_sim_seq)
+        prob_sim_seq = generator(encoder(net_utils.one_hot(pred_sim_seq, vocab_size)), true_out=pred_sim_seq) # teacher forcing -----------
         g_loss = gan_loss_f(prob_sim_seq, pred_sim_seq.contiguous().view((-1)), rewards) / batch_size
         g_optim.zero_grad()
         e_optim.zero_grad()
@@ -257,11 +252,12 @@ def train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, ro
             
         seq_one_hot = net_utils.one_hot(seq, vocab_size)
         encoded_seq = encoder(seq_one_hot)
-        prob_sim_seq = generator(encoded_seq, teacher_forcing=False)
+        prob_sim_seq = generator(encoded_seq, true_out=sim_seq) #teacher forcing -----------------
         pred_sim_seq = net_utils.prob2pred(prob_sim_seq)
-        d_fake = discriminator(pred_sim_seq)
-        d_real = discriminator(sim_seq) # sim_seq OR seq ???
-        d_loss = d_loss_f(d_fake, discriminator.module.out_tensor(d_fake, 'fake')) + d_loss_f(d_real, discriminator.module.out_tensor(d_real, 'real'))
+        # d_fake = discriminator(pred_sim_seq)
+        # d_real = discriminator(sim_seq) # sim_seq OR seq ???
+        # d_loss = d_loss_f(d_fake, discriminator.module.out_tensor(d_fake, 'fake')) + d_loss_f(d_real, discriminator.module.out_tensor(d_real, 'real'))
+        d_loss = discriminator(pred_sim_seq, sim_seq)
         d_optim.zero_grad()
         d_loss.backward()
         d_optim.step()    
@@ -272,7 +268,6 @@ def train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, ro
     writer_train.add_scalar('g_loss', g_loss.item(), log_idx)
     writer_train.add_scalar('local_loss', local_loss.item(), log_idx)
     writer_train.add_scalar('d_loss', d_loss.item(), log_idx)
-    eval_batch(encoder, generator, discriminator, test_loader_iter, writer_val, log_idx = log_idx,sample_flag=True)
     log_idx+=1
 
     return log_idx
@@ -347,10 +342,18 @@ if __name__ == '__main__' :
     print('Adversarial training starts ...')
     log_idx = 0
 
+    encoder.train()
+    generator.train()
+    discriminator.train()
+    generator = nn.DataParallel(generator)
+    discriminator = nn.DataParallel(discriminator)
+
     for epoch in range(start_epoch, start_epoch + n_epoch):
 
         log_idx = train_epoch(encoder, generator, discriminator, e_optim, g_optim, d_optim, rollout, train_loader, test_loader_iter, writer_train, writer_val, log_idx=log_idx)
+        # eval_batch(encoder, generator, discriminator, test_loader_iter, writer_val, log_idx = log_idx,sample_flag=True)
         
         print('epoch = ', epoch, flush=True)
-
+        eval_batch(encoder, generator, discriminator, test_loader_iter, writer_val, log_idx = log_idx,sample_flag=True)    
+    eval_batch(encoder, generator, discriminator, test_loader_iter, writer_val, log_idx = log_idx,sample_flag=True)    
     print('Done !!!')

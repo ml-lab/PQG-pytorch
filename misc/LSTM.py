@@ -33,7 +33,7 @@ class LSTM(nn.Module):
         #     # print(out1.size())
         #     out_lstm[batch, : lengths[batch], :] = out1[:,:,:]
         #     hidden.append(h)
-        self.rnn.flatten_parameters()
+        # self.rnn.flatten_parameters()
         if h:
             out_lstm, hidden = self.rnn(input_batch, h)
         else :

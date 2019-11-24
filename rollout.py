@@ -16,35 +16,44 @@ class Rollout(object):
         self.update_rate = update_rate
         self.vocab_size = vocab_size
 
-    def get_reward(self, x, num, discriminator):
+    def get_reward(self, x, num, discriminator, z):
         """
         Args:
             x : (batch_size, seq_len) input data
             num : roll-out number
             discriminator : discrimanator model
         """
-        rewards = []
-        batch_size = x.size(0)
-        seq_len = x.size(1)
-        for i in range(num):
-            for l in range(1, seq_len):
-                data = x[:, 0:l]
-                samples = net_utils.prob2pred(self.g_own_model(self.e_own_model(one_hot(data, self.vocab_size)), teacher_forcing=False))
-                pred = discriminator(samples)
-                pred = pred.cpu().data.numpy()
-                if i == 0:
-                    rewards.append(pred)
-                else:
-                    rewards[l-1] += pred
+        # rewards = torch.zeros()
+        with torch.no_grad():
+            batch_size = x.size(0)
+            seq_len = x.size(1)
+            data = torch.zeros(batch_size * seq_len, seq_len, device=x.device, dtype=torch.long)
+            rewards = torch.zeros(batch_size * seq_len, device=x.device)
+            y = torch.cat([z for i in range(seq_len)], dim=0)
+            for l in range(seq_len):
+                data[l*batch_size:(l+1)*batch_size, :l+1] = x[:,:l+1]
 
-            # for the last token
-            pred = discriminator(x)
-            pred = pred.cpu().data.numpy()
-            if i == 0:
-                rewards.append(pred)
-            else:
-                rewards[seq_len-1] += pred
-        rewards = np.transpose(np.array(rewards)) / (1.0 * num) # batch_size * seq_len
+            for i in range(num):
+                # for l in range(1, seq_len):
+                #     data = x[:, 0:l]
+                #     samples = net_utils.prob2pred(self.g_own_model(self.e_own_model(one_hot(data, self.vocab_size)), teacher_forcing=False))
+                #     pred = discriminator(samples)
+                #     pred = pred.cpu().data.numpy()
+                #     if i == 0:
+                #         rewards.append(pred)
+                #     else:
+                #         rewards[l-1] += pred    
+                # for the last token
+                # pred = discriminator(x)
+                # pred = pred.cpu().data.numpy()
+                # if i == 0:
+                #     rewards.append(pred)
+                # else:
+                #     rewards[seq_len-1] += pred
+                '''forcing changed ----------------'''
+                rewards += discriminator(net_utils.prob2pred(self.g_own_model(self.e_own_model(one_hot(data, self.vocab_size)), true_out=y)), y).view(-1)
+                
+            rewards = rewards / (1.0 * num) # batch_size * seq_len
         return rewards
 
     def update_params(self):

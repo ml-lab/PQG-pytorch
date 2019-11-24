@@ -47,7 +47,7 @@ def prob2pred(prob):
 
     return torch.multinomial(torch.exp(prob.view(-1, prob.size(-1))), 1).view(prob.size(0), prob.size(1))
 
-def JointEmbeddingLoss(self, feature_emb1, feature_emb2):
+def JointEmbeddingLoss(feature_emb1, feature_emb2):
         
     batch_size = feature_emb1.size()[0]
     # loss = 0

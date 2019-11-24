@@ -20,7 +20,7 @@ class Discriminator(nn.Module):
         self.dropout_linear = nn.Dropout(p=dropout)
         self.hidden2out = nn.Linear(hidden_dim, 1)
 
-    def forward(self, input, hidden=None):
+    def forward(self, input, out, hidden=None):
         '''# input dim                                                # batch_size x seq_len
         emb = self.embeddings(input.long())                               # batch_size x seq_len x embedding_dim
         emb = emb.permute(1, 0, 2)                                 # seq_len x batch_size x embedding_dim
@@ -34,7 +34,8 @@ class Discriminator(nn.Module):
         out = torch.sigmoid(out)
         return out
         '''
-        return torch.sigmoid(self.hidden2out(self.dropout_linear(self.encoder(net_utils.one_hot(input, self.vocab_size)))))
+        # return torch.sigmoid(self.hidden2out(self.dropout_linear(self.encoder(net_utils.one_hot(input, self.vocab_size)))))
+        return net_utils.JointEmbeddingLoss(self.encoder(net_utils.one_hot(input, self.vocab_size)), self.encoder(net_utils.one_hot(out, self.vocab_size)))
 
         
     def out_tensor(self, inp, val):
