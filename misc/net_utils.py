@@ -14,10 +14,13 @@ def decode_sequence(ix_to_word, seq):
                 word = ix_to_word[len(ix_to_word) - 1]
             else:
                 word = ix_to_word[int(ix.item())]
-            
-            if word == '<PAD>':
-                word = ''
-            
+            if word == '<EOS>':
+                txt = txt + ' '
+                txt = txt + word
+                break
+            if word == '<SOS>':
+                txt = txt + '<SOS>'
+                continue
             if j > 0:
                 txt = txt + ' '
             txt = txt + word
